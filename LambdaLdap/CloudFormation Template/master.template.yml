@@ -1,0 +1,943 @@
+#eucentralasf
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  EC2InstanceType:
+    Description: Instance type for Launch Configuration (i.e. t2.micro or m4.large)
+    Type: String
+    MaxLength: 10
+    Default: t2.micro
+  minSize:
+    Description: >-
+      Specify the number of instances you want to run in this Auto Scaling group
+    Type: Number 
+    Default: 5
+  maxSize:
+    Description: >-
+      The maximum number of instances the Auto Scaling group should have at any time
+    Type: Number 
+    Default: 5
+  ldapPort:
+    Description: >-
+      Default LDAP Port is 389 and for LDAP over SSL it is 636
+    Type: Number
+    Default: 389
+  LDAPS:
+    Description: >-
+      Should the connection to you LDAP Servers be encrypted?
+    Type: String
+    Default: No
+    AllowedValues:
+      - Yes
+      - No
+  EC2KeyName:
+    Description: >-
+      Public/private key pairs allow you to securely connect to your instance
+      after it launches
+    Type: 'AWS::EC2::KeyPair::KeyName'
+  DsIPaddress1:
+    Description: |
+      AD server number one's IP address (used for the domain join operation)
+    Type: String
+    AllowedPattern: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    Default: 172.31.31.153
+  DsIPaddress2:
+    Description: |
+      AD server number two's IP address (used for the domain join operation)
+    Type: String
+    AllowedPattern: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    Default: 172.31.6.19
+  directoryId:
+    Description: >
+      This should be the directory ID of your AWS directory or directory
+      connector
+    Type: String
+    AllowedPattern: ^d-.*|^D-*
+    Default: d-2345678900
+  directoryName:
+    Description: |
+      This is the fqdn of your domain name, i.e. contoso.com
+    Type: String
+    AllowedPattern: '^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$'
+    Default: contoso.com
+  directorySearchBase:
+    Description: >
+      The LDAP search base to look for the AD computer to remove when terminated
+      in Auto Scaling Group. i.e. entering the root of the domain
+      'DC=mydomain,DC=com' will search the entire subtree of the domain
+      partition.
+    Type: String
+    AllowedPattern: ^dc=.*|^cn=.*|^ou=.*|^DC=.*|^CN=.*|^OU=.*
+    Default: 'DC=contoso,DC=com'
+  directoryOU:
+    Type: String
+    AllowedPattern: ^dc=.*|^cn=.*|^ou=.*|^DC=.*|^CN=.*|^OU=.*
+    Default: 'CN=Computers,DC=contoso,DC=com'
+   
+  AdministrativeUser:
+    Description: >
+      The distinguished name of the user with priveleges to remove/delete the
+      terminated computer object i.e.
+      'CN=administrator,CN=users,DC=contoso,DC=com' will search the entire
+      subtree of the domain partition.
+    Type: String
+    AllowedPattern: ^dc=.*|^cn=.*|^ou=.*|^DC=.*|^CN=.*|^OU=.*
+    Default: 'CN=Administrator,CN=Users,DC=contoso,DC=com'
+  AdministrativePassword:
+    Description: |
+      The password for the administrative user.
+    Type: String
+    MinLength: 1
+    MaxLength: 50
+    NoEcho: true
+  LCSecGroupId:
+    Description: Launch Configuration - security group ID
+    Type: 'AWS::EC2::SecurityGroup::Id'
+    Default: sg-d8a06ca1
+  ASGSubnetIdList:
+    Description: >
+      List of subnet id(s) to limit the auto scaling group to. The default is to
+      create an autoscaling group in all availability zones. Enter at least one
+      subnet or a multiple of:  i.e. subnet-8f1234a1, subnet-9a123fab
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Default: subnet-a11a67fa
+  ASGAvailabilityZones:
+    Type: 'List<AWS::EC2::AvailabilityZone::Name>'
+    Default: eu-west-1c
+  LCAmiId:
+    Description: Launch Configuration - Ami image ID for the Launch Configuration
+    Type: String
+    AllowedPattern: ^ami-.*|^AMI-*|Ami-*
+    Default: ami-12345678
+  KMSIAMRoleName:
+    Type: String
+    Description: >
+      Friendly Name for IAM Role that can decrypt and manage the administrator password in KMS, i.e. 'MyLambdaIAMRole' or 'kmsSecurityTeam'
+    AllowedPattern: '^((?!:).)*$'
+    Default: iamrolename
+  LambdaSecurityGroup:
+    Description: >
+      Lambda Security Group - Note: this should have outbound internet access as
+      well as outbound rules to communicate via LDAP (typically TCP port 389) or LDAPS (typically TCP Port 636) to the IP
+      addresses of the LDAP Servers/Domain Controllers specified. This can be
+      the same security group as the Autoscaling group security group list
+      (ASGSubnetIdList)
+    Type: 'AWS::EC2::SecurityGroup::Id'
+    Default: sg-d8a06ca1
+  LambdaSubnetList:
+    Description: >
+      List of subnet id(s) for the Lambda Function. Note: this subnet typically
+      has a NAT gateway attached for outbound internet access. This can be the
+      same subnet as the Launch configuration security group (LCSecGroupId).
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Default: subnet-a11a67fa
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: LDAP (Directory Services) Parameters
+        Parameters:
+          - LDAPS
+          - ldapPort
+          - EnableTaskCleanup
+          - DsIPaddress1
+          - DsIPaddress2
+          - directoryId
+          - directoryName
+          - directoryOU
+          - directorySearchBase
+          - AdministrativeUser
+          - AdministrativePassword
+      - Label:
+          default: Auto Scaling Group / Launch Configuration
+        Parameters:
+          - EC2InstanceType
+          - EC2KeyName
+          - LCSecGroupId
+          - ASGSubnetIdList
+          - ASGAvailabilityZones
+          - LCAmiId
+          - minSize
+          - maxSize
+      - Label:
+          default: Lambda and Security Configuration
+        Parameters:
+          - KMSIAMRoleName
+          - LambdaSecurityGroup
+          - LambdaSubnetList
+    ParameterLabels:
+      EC2InstanceType:
+        default: LC Instance type (i.e. t2.micro)
+      minSize:
+        default: Minimum number of instances
+      maxSize:
+        default: Maximum number of instances
+      KMSIAMRoleName:
+        default: Existing IAM role for LDAP admin password decryption.
+      LambdaSecurityGroup:
+        default: Lambda Security Group
+      LambdaSubnetList:
+        default: Lambda Subnet List
+      LDAPS:
+        default: LDAP encryption (LDAPS)
+      ldapPort:
+        default: LDAP Port 
+      DsIPaddress1:
+        default: Ldap Server 1 Ip Address
+      DsIPaddress2:
+        default: Ldap Server 2 Ip Address
+      directoryId:
+        default: Directory ID (d-<hexvalue>)
+      directoryOU:
+        default: DN for computer account creation
+      directoryName:
+        default: Directory FQDN
+      directorySearchBase:
+        default: LDAP Base DN for Search
+      AdministrativeUser:
+        default: DN for privileged user that can remove computer objects
+      EC2KeyName:
+        default: EC2 Key Pair
+      LCSecGroupId:
+        default: Security Group for Instances
+      ASGSubnetIdList:
+        default: Auto-Scaling Group subnet(s)
+      ASGAvailabilityZones:
+        default: Auto-Scaling Group Availability Zone(s)
+      LCAmiId:
+        default: AMI image to use
+
+Resources:
+  PushSourcetoLocalS3Region:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 
+        - LambdaExecutionRole
+        - Arn
+      Code:
+        ZipFile: !Join 
+          - |+
+
+          - - import boto3
+            - import json
+            - import cfnresponse
+            - import urllib2
+            - import os
+            - import botocore.exceptions
+            - cfnclient = boto3.client('cloudformation')
+            - s3client = boto3.client('s3')
+            - 'def lambda_handler(event, context):'
+            - "  print('request type - ' + (event['RequestType']))"
+            - "  print('json dump - ' + json.dumps(event))"
+            - '  s3source = ''lamfuncs'''
+            - '  key = ''LambdaLdap.zip'''
+            - !Join
+              - ''
+              - - "  targetBucketS3 = '"
+                - !Ref "AWS::StackName"
+                - "-"
+                - !Ref "AWS::AccountId"
+                - "-packagelambdaldap"
+                - "'"
+            - '  out = os.path.join("/tmp/", key)'
+            - "  if event['RequestType'] in ['Create', 'Update']:"
+            - '      url = "https://s3.amazonaws.com/lamfuncs/LambdaLdap.zip"'
+            - '      page = urllib2.urlopen(url)'
+            - '      open(out, "wb").write(page.read())'
+            - '      try:'
+            - !Join
+              - ''
+              - -  "          s3client.create_bucket(ACL='private',Bucket=targetBucketS3,CreateBucketConfiguration={'LocationConstraint':'"
+                - !Ref "AWS::Region"
+                - "'})"
+            - '      except botocore.exceptions.ClientError as e:'
+            - "          print e.response['Error']['Code']"
+            - '      try:'
+            - "          s3client.upload_file('/tmp/' + key, targetBucketS3, key)"
+            - '      except botocore.exceptions.ClientError as e:'
+            - "          print e.response['Error']['Code']"            
+            - !Join 
+              - ''
+              - - "      response = cfnclient.describe_stacks(StackName='"
+                - !Ref "AWS::StackName"
+                - "')"
+            - "      responseData = {}"
+            - "      responseData['data'] = response['Stacks'][0]['StackId']"
+            - '      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")'
+            - "  if event['RequestType'] == 'Delete':"
+            - "      s3resource = boto3.resource('s3')"
+            - '      bucket = s3resource.Bucket(targetBucketS3)'
+            - '      try:'
+            - '          bucket.objects.all().delete()'
+            - '          bucket.delete()'
+            - '      except botocore.exceptions.ClientError as e:'
+            - "          print e.response['Error']['Code']"
+            - !Join 
+              - ''
+              - - "      response = cfnclient.describe_stacks(StackName='"
+                - !Ref "AWS::StackName"
+                - "')"
+            - "      responseData = {}"
+            - "      responseData['data'] = response['Stacks'][0]['StackId']"
+            - '      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")'
+      Runtime: python2.7
+      Timeout: "10"
+      Environment:
+        Variables:
+          LAMBDA_NET_SERIALIZER_DEBUG: true
+      
+  CustomResourcePushSourcetoLocalS3Region:
+    Type: "AWS::CloudFormation::CustomResource"
+    Properties:
+      ServiceToken: !GetAtt 
+        - PushSourcetoLocalS3Region
+        - Arn
+    DependsOn: PushSourcetoLocalS3Region
+  SSMParameterLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "Stmt1507232964000"
+                Effect: "Allow"
+                Action:
+                  - "ssm:GetParameter"
+                  - "ssm:GetParameters"
+                  - "ssm:PutParameter"
+                  - "ssm:DeleteParameter"
+                Resource: "*"
+  SSMParameterLifeCycleFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 
+        - SSMParameterLambdaExecutionRole
+        - Arn
+      Code:
+        ZipFile: !Join 
+          - |+
+          
+          - - "import uuid"
+            - "import json"
+            - "import boto3"
+            - "import string"
+            - "import random"
+            - "import base64"
+            - "import hashlib"
+            - "import httplib"
+            - "import urlparse"
+            - "def delete_ssm_parameter(parameter_name):"
+            - "    client = boto3.client('ssm')"
+            - "    response = client.delete_parameter(Name=parameter_name)"
+            - "def store_secure_string(name, value, key_id):"
+            - "    client = boto3.client('ssm')"
+            - "    try:"
+            - "        response = client.put_parameter("
+            - "            Name=name,"
+            - "            Value=value,"
+            - "            Type='SecureString',"
+            - "            KeyId=key_id,"
+            - "            Overwrite=False"
+            - "        )"
+            - "        return (True, '')"
+            - "    except Exception as e:"
+            - "        return (False, e)"
+            - "def lambda_handler(event, context):"
+            - "    response = {"
+            - "        'StackId': event['StackId'],"
+            - "        'RequestId': event['RequestId'],"
+            - "        'LogicalResourceId': event['LogicalResourceId'],"
+            - "        'Status': 'SUCCESS'"
+            - "    }"
+            - "    if 'PhysicalResourceId' in event:"
+            - "        response['PhysicalResourceId'] = event['PhysicalResourceId']"
+            - "    else:"
+            - "        response['PhysicalResourceId'] = str(uuid.uuid4())"
+            - "    if not check_event_keys(event, ['StackName', 'KeyId']):"
+            - "        return send_response("
+            - "            event,"
+            - "            response,"
+            - "            status='FAILED',"
+            - "            reason='Function parameters missing'"
+            - "        )"
+            - "    username_key = event['ResourceProperties']['StackName'] + '-ldapUserName'"
+            - "    password_key = event['ResourceProperties']['StackName'] + '-ldapPassword'"
+            #- !Sub "    username = '${AdministrativeUser}'"
+            #- !Sub "    password = '${AdministrativePassword}'"
+            #- "    username = generate_random_string(8)"
+            #- "    password = generate_random_string(16)"
+            - "    username = event['ResourceProperties']['username']"
+            - "    password = event['ResourceProperties']['password']"
+            - "    if (event['RequestType'] == 'Update'):"
+            - "        return send_response(event, response)"
+            - "    elif (event['RequestType'] == 'Delete'):"
+            - "        delete_ssm_parameter(username_key)"
+            - "        delete_ssm_parameter(password_key)"
+            - "        return send_response(event, response)"
+            - "    key_id = event['ResourceProperties']['KeyId']"
+            - "    set_1 = store_secure_string(username_key, username, key_id)"
+            - "    set_2 = store_secure_string(password_key, password, key_id)"
+            - "    if not (set_1[0] and set_2[0]):"
+            - "        return send_response("
+            - "            event,"
+            - "            response,"
+            - "            status='FAILED',"
+            - "            reason='%s - %s' % (set_1[1], set_2[1])"
+            - "        )"
+            - "    response['Data'] = {"
+            - "            'username': username,"
+            - "            'password': password"
+            - "    }"
+            - "    return send_response("
+            - "        event,"
+            - "        response,"
+            - "        reason='Successfully added user and password in SSM'"
+            - "    )"
+            - "def send_response(request, response, status=None, reason=None):"
+            - "    if status is not None:"
+            - "        response['Status'] = status"
+            - "    if reason is not None:"
+            - "        response['Reason'] = reason"
+            - "    if 'ResponseURL' in request and request['ResponseURL']:"
+            - "        try:"
+            - "            url = urlparse.urlparse(request['ResponseURL'])"
+            - "            body = json.dumps(response)"
+            - "            https = httplib.HTTPSConnection(url.hostname)"
+            - "            https.request('PUT', url.path + '?' + url.query, body)"
+            - "        except:"
+            - "            print('Failed to send the response to the provided URL')"
+            - "    return response"
+            - "def check_event_keys(event, keys_list):"
+            - "    for key in keys_list:"
+            - "        if not key in event['ResourceProperties'].keys():"
+            - "            return False"
+            - "    return True"
+            - "def generate_random_string(string_length=20, underscore=False):"
+            - "    generated_string = ''"
+            - "    char_set = string.ascii_uppercase + string.ascii_lowercase + string.digits + '-'"
+            - "    while '-' not in generated_string or \\"
+            - "          generated_string.endswith('-') or \\"
+            - "          generated_string.startswith('-'):"
+            - "        generated_string = ''.join(random.sample(char_set * 6, int(string_length)))"
+            - "    if underscore:"
+            - "        return generated_string.replace('-', '_')"
+            - "    return generated_string"
+      Runtime: python2.7
+      Timeout: "10"
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: "arn:aws:cloudformation:*:*:*"
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "lambda:UpdateFunctionConfiguration"
+                  - "ec2:CreateNetworkInterface"
+                  - "ec2:DeleteNetworkInterface"
+                  - "ec2:Describe*"
+                Resource: "*"
+  JoinADDoc:
+    Type: 'AWS::SSM::Document'
+    Properties:
+      Content:
+        schemaVersion: '1.2'
+        description: Join instances to an AWS Directory Service domain.
+        runtimeConfig:
+          'aws:domainJoin':
+            properties:
+              directoryId: !Ref directoryId
+              directoryName: !Ref directoryName
+              dnsIpAddresses:
+                - !Ref DsIPaddress1
+                - !Ref DsIPaddress2
+              directoryOU: !Ref directoryOU
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: b5a331f6-662f-4621-b639-28be45a536ebs
+  LCwithLDAPautomation:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Version: 2009-05-15
+    Properties:
+      ImageId: !Ref LCAmiId
+      SecurityGroups:
+        - Ref: LCSecGroupId
+      KeyName: !Ref EC2KeyName
+      UserData:
+        'Fn::Base64': !Sub >
+          <powershell>Set-DefaultAWSRegion -Region ${AWS::Region}
+
+          Set-Variable -name instance_id -value (Invoke-Restmethod -uri
+          http://169.254.169.254/latest/meta-data/instance-id)
+
+          New-SSMAssociation -InstanceId $instance_id -Name
+          ${JoinADDoc}</powershell>           
+      InstanceType: !Ref EC2InstanceType
+      InstanceMonitoring: 'true'
+      IamInstanceProfile: !Ref InstanceProfile
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: b63bc95d-d231-4f24-a38c-a9054a405f0a
+  ASGwithLDAPautomation:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Version: 2009-05-15
+    Properties:
+      AvailabilityZones: !Ref ASGAvailabilityZones
+      LaunchConfigurationName: !Ref LCwithLDAPautomation
+      MinSize: !Ref minSize
+      MaxSize: !Ref maxSize
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: '120'
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+          PropagateAtLaunch: true
+      VPCZoneIdentifier: !Ref ASGSubnetIdList
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 9fa81709-b237-4852-9002-adac1fc65f9d
+  ASGLifeCycleHook:
+    Type: 'AWS::AutoScaling::LifecycleHook'
+    Properties:
+      AutoScalingGroupName: !Ref ASGwithLDAPautomation
+      DefaultResult: CONTINUE
+      HeartbeatTimeout: 300
+      LifecycleTransition: 'autoscaling:EC2_INSTANCE_TERMINATING'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 867a2392-48cf-451a-9132-291691ff3f34
+  EC2SSMRoleASG:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: fdb5cc37-3dac-4dad-9f95-ec4292b44237
+  RolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: AmazonEC2RoleforSSM-ASGDomainJoin
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ssm:DescribeAssociation'
+              - 'ssm:GetDeployablePatchSnapshotForInstance'
+              - 'ssm:GetDocument'
+              - 'ssm:GetManifest'
+              - 'ssm:GetParameters'
+              - 'ssm:ListAssociations'
+              - 'ssm:ListInstanceAssociations'
+              - 'ssm:PutInventory'
+              - 'ssm:PutComplianceItems'
+              - 'ssm:PutConfigurePackageResult'
+              - 'ssm:UpdateAssociationStatus'
+              - 'ssm:UpdateInstanceAssociationStatus'
+              - 'ssm:UpdateInstanceInformation'
+              - 'ssm:CreateAssociation'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'ec2messages:AcknowledgeMessage'
+              - 'ec2messages:DeleteMessage'
+              - 'ec2messages:FailMessage'
+              - 'ec2messages:GetEndpoint'
+              - 'ec2messages:GetMessages'
+              - 'ec2messages:SendReply'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'ec2:DescribeInstanceStatus'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'ds:CreateComputer'
+              - 'ds:DescribeDirectories'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:DescribeLogGroups'
+              - 'logs:DescribeLogStreams'
+              - 'logs:PutLogEvents'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:AbortMultipartUpload'
+              - 's3:ListMultipartUploadParts'
+              - 's3:ListBucket'
+              - 's3:ListBucketMultipartUploads'
+            Resource: '*'
+      Roles:
+        - !Ref EC2SSMRoleASG
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: a1ab9cef-77ce-47f3-9813-0d797b5ebf42
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2SSMRoleASG
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: e5ae695c-f37d-4d3d-8b76-e32e8ff9e50a
+  LambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 193443ba-e2e4-462a-b3dd-7aaa1c6869e1
+  KeyforLambda:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      KeyPolicy:
+        Id: !Ref "AWS::StackName"
+        Version: 2012-10-17
+        Statement: 
+          - Sid: Allow for Root user full access
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root' 
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow access for Key Administrators
+            Effect: Allow
+            Principal: 
+              AWS: 
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${KMSIAMRoleName}'
+            Action: 
+              - 'kms:Create*'
+              - 'kms:Describe*'
+              - 'kms:Enable*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Update*'
+              - 'kms:Revoke*'
+              - 'kms:Disable*'
+              - 'kms:Get*'
+              - 'kms:Delete*'
+              - 'kms:TagResource'
+              - 'kms:UntagResource'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:CancelKeyDeletion'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:DescribeKey'
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !GetAtt
+                  - LambdaIAMRole
+                  - Arn
+            Action:
+              - 'kms:Describe*'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !GetAtt
+                  - LambdaExecutionRole
+                  - Arn
+                - !GetAtt
+                  - SSMParameterLambdaExecutionRole
+                  - Arn
+                  
+            Action:
+              - 'kms:Create*'
+              - 'kms:Describe*'
+              - 'kms:Enable*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Update*'
+              - 'kms:Revoke*'
+              - 'kms:Disable*'
+              - 'kms:Get*'
+              - 'kms:Delete*'
+              - 'kms:TagResource'
+              - 'kms:UntagResource'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:CancelKeyDeletion'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+            Resource: '*'
+    DependsOn: LambdaLdapFunction  
+  LambdaLdapFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: 'LambdaLdap::LambdaLDAP.Function::FunctionHandler'
+      Role: 
+        Fn::GetAtt:
+          - "LambdaIAMRole"
+          - "Arn"
+      Code:
+        S3Bucket: !Join
+          - ''
+          - - !Ref "AWS::StackName"
+            - "-"
+            - !Ref "AWS::AccountId"
+            - "-packagelambdaldap"
+        S3Key: LambdaLdap.zip
+      Runtime: dotnetcore1.0
+      Timeout: '60'
+      #Environment:
+        #Variables:
+          #password: !Ref AdministrativePassword
+          #privilegedDN: !Ref AdministrativeUser
+          #domain: !Ref directoryName
+          #scope: !Ref directorySearchBase
+          #ldapPort: 389
+          #LAMBDA_NET_SERIALIZER_DEBUG: true
+      VpcConfig:
+        SecurityGroupIds:
+          - Ref: LambdaSecurityGroup
+        SubnetIds: !Ref LambdaSubnetList
+    DependsOn: 
+     - PushSourcetoLocalS3Region
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 0104e968-edd4-4c88-b8c9-9715a5c8ac3a
+  CWatchEventsRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      State: ENABLED
+      EventPattern: !Sub >
+        {"source": ["aws.autoscaling"],"detail-type": ["EC2 Instance-terminate
+        Lifecycle Action" ],"detail": {"AutoScalingGroupName":
+        ["${ASGwithLDAPautomation}"]}}
+      Targets:
+        - Arn: !GetAtt 
+            - LambdaLdapFunction
+            - Arn
+          Id: Id134
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 690f9c88-4ce5-4e5f-867a-746adec1716b
+  EventRuleLambdaAllow:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt 
+        - LambdaLdapFunction
+        - Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 
+        - CWatchEventsRule
+        - Arn
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 39fce7fe-71a4-43c7-9d6a-15e8712fa19e
+  LambdaIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: LDAPLambdaIAMPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+              - 'ds:CreateComputer'
+              - 'ds:DescribeDirectories'
+              - 'ec2:DescribeInstanceStatus'
+              - 'logs:*'
+              - 'ssm:*'
+              - 'ec2messages:*'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'logs:*'
+            Resource: 'arn:aws:logs:*:*:*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Resource: 'arn:aws:s3:::*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'ec2:Create*'
+              - 'ec2:DescribeNetworkInterfaces'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DetachNetworkInterface'
+            Resource: '*'
+      Roles: 
+           - !Ref LambdaIAMRole
+  EncryptthePass:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 
+        - LambdaExecutionRole
+        - Arn
+      Code:
+        ZipFile: !Join 
+          - |+
+
+          - - import boto3
+            - import json
+            - import cfnresponse
+            - import os
+            - import botocore.exceptions
+            - from base64 import b64encode
+            - cfnclient = boto3.client('cloudformation')
+            - lambdaclient = boto3.client('lambda')
+            #- kms_client = boto3.client('kms')
+            - 'def lambda_handler(event, context):'
+            #- "  print('request type - ' + (event['RequestType']))"
+            #- "  print('json dump - ' + json.dumps(event))"
+            - "  if event['RequestType'] in ['Create', 'Update']:"
+            #- !Sub "      plaintext = '${AdministrativePassword}'"
+            - !Join
+              - ''
+              - - "      kms_key  = '"
+                - !GetAtt
+                    - KeyforLambda
+                    - Arn 
+                - "'"
+            #- "      encrypted = b64encode(kms_client.encrypt(Plaintext=event['ResourceProperties']['PasstoEncryptValue'], KeyId=kms_key)['CiphertextBlob'])"
+            - !Sub "      functionArn = '${LambdaLdapFunction.Arn}'"
+            - !Sub "      functionName = functionArn.split(':')[-1]"
+            - "      response = lambdaclient.update_function_configuration("
+            - "          FunctionName=functionName,"
+            - !Sub "          KMSKeyArn='${KeyforLambda.Arn}',"
+            - "          Environment={"
+            - "              'Variables': {"
+            #- "                  'password': encrypted,"
+            - !Sub "                  'SSMParameterPrivilegedDN': '${AWS::StackName}-ldapUserName',"
+            - !Sub "                  'SSMParameterPassword': '${AWS::StackName}-ldapPassword',"
+            - !Sub "                  'domain': '${directoryName}',"
+            - !Sub "                  'scope': '${directorySearchBase}',"
+            - !Sub "                  'ldaps': '${LDAPS}',"
+            - !Sub "                  'ldapPort': '${ldapPort}',"
+            - "                  'LAMBDA_NET_SERIALIZER_DEBUG': 'true'"
+            - "              }"
+            - "          }"
+            - "      )"
+            - !Join 
+              - ''
+              - - "  response = cfnclient.describe_stacks(StackName='"
+                - !Ref "AWS::StackName"
+                - "')"
+            - "  responseData = {}"
+            - "  responseData['data'] = response['Stacks'][0]['StackId']"
+            - '  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")'
+      Runtime: python2.7
+      Timeout: "10"
+      #Environment:
+        #Variables:
+          #LAMBDA_NET_SERIALIZER_DEBUG: true
+  CustomResourceEncryptionHelper:
+    Type: "AWS::CloudFormation::CustomResource"
+    Properties:
+      ServiceToken: !GetAtt 
+        - EncryptthePass
+        - Arn
+      PasstoEncryptValue: !Ref AdministrativePassword
+    DependsOn: CustomResourcePushSourcetoLocalS3Region
+  GeneratePasswordHelper:
+    Type: AWS::CloudFormation::CustomResource
+    Version: '1.0'
+    Properties:
+      ServiceToken: !GetAtt 
+        - SSMParameterLifeCycleFunction
+        - Arn
+      StackName: !Ref AWS::StackName
+      KeyId: !Ref KeyforLambda
+      username: !Ref AdministrativeUser
+      password: !Ref AdministrativePassword
+Outputs:
+  StackName:
+    Description: StackId
+    Value: !GetAtt
+      - CustomResourcePushSourcetoLocalS3Region
+      - data
+  KMSKeyArn:
+    Description: KMS Key used to encrypt LDAP Password
+    Value: !GetAtt
+      - KeyforLambda
+      - Arn
+  #username:
+   # Description: Username generated by Lambda
+    #Value: !GetAtt [ SSMParameterLifeCycleFunction, username ]
+      

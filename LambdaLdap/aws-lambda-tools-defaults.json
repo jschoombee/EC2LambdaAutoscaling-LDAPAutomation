@@ -1,0 +1,22 @@
+
+{
+    "Information" : [
+        "This file provides default values for the deployment wizard inside Visual Studio and the AWS Lambda commands added to the .NET Core CLI.",
+        "To learn more about the Lambda commands with the .NET Core CLI execute the following command at the command line in the project root directory.",
+        "dotnet lambda help",
+        "All the command line options for the Lambda command can be specified in this file."
+    ],
+    "profile"     : "Default",
+    "region"      : "ca-central-1",
+    "configuration" : "Release",
+    "framework"     : "netcoreapp1.0",
+    "function-runtime" : "dotnetcore1.0",
+    "function-memory-size" : 128,
+    "function-timeout"     : 60,
+    "function-handler"     : "LambdaLdap::LambdaLDAP.Function::FunctionHandler",
+    "function-name"        : "foobie-LambdaLdapFunction-BYCXY0ZM1DFP",
+    "function-role"        : "arn:aws:iam::194551879367:role/foobie-LambdaIAMRole-1RUM6KM2M63DY",
+    "function-subnets"     : "subnet-4091a729,subnet-42541a39",
+    "function-security-groups" : "sg-805c85e8",
+    "environment-variables"    : "\"LAMBDA_NET_SERIALIZER_DEBUG\"=\"true\";\"SSMParameterPassword\"=\"foobie-ldapPassword\";\"domain\"=\"canada.local\";\"ldapPort\"=\"389\";\"ldaps\"=\"false\";\"privilegedDN\"=\"foobie-ldapUserName\";\"scope\"=\"DC=canada,DC=local\""
+}
