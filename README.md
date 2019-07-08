@@ -1,5 +1,5 @@
-# EC2LambdaAutoscaling-LDAPAutomation
-EC2 Autoscaling automatic domain join and removal using Lifecycle Hooks and AWS Lambda
+﻿# EC2LambdaAutoscaling-LDAPAutomation
+EC2 Autoscaling automatic domain join and removal using Lifecycle Hooks and AWS Lambda.
 # The Problem
 Depending on the elasticity of your auto scaling group(s), this can typically leave a large trail of computer objects behind. Retroactive removal of computer objects from a directory is never without risk; typically scheduled scripts scan computer objects for objects with old computer passwords, often coupled with DNS and/or ICMP (ping) checks to sanitize; the issue comes in with computer objects that don’t update their passwords (pwdLastset), usually this happens automatically every 30 days and is driven by the computer client. In turn this could skew the deletion targets for scripted runs and render a live server with a broken secure channel with its domain controller.
 # The Solution
